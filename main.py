@@ -3,19 +3,28 @@ import math
 import time
 import glob
 import configparser
-import ffmpeg
 import subprocess
 import shlex
 import datetime
 import requests
 import json
-import psutil
 import psycopg2
 import pandas as pd
 import signal
 import paho.mqtt.client as mqtt
 from icecream import ic 
 from cfg import *
+from json2db import *
+from textdistance import levenshtein as textdist
+import numpy as np 
+
+def mergeByTs(tbTelemetryData): 
+        recs=defaultdict(dict)
+        for k,v in data.items(): 
+            for obj in v:
+                ts,val=obj["ts"],obj["value"]
+                recs[ts][k]=val
+        return [dict(ts=k,**v) for k,v in recs.items()]
 
 class Thingsboard():
 
@@ -98,6 +107,17 @@ class Thingsboard():
         data = r.json()
         return data
         
+    def getAttr(self,id, scope='SHARED_SCOPE'):
+        if isinstance(id,dict): 
+            entityType=id['entityType']
+            id=id['id']
+        headers = {'X-Authorization': f'Bearer {self.accessToken()}'}
+        url = f'{self.baseUrl}/api/plugins/telemetry/DEVICE/{id}/values/attributes/{scope}'
+        r = requests.get(url, headers=headers)
+        if r.status_code != 200:
+            raise Exception(r.content)
+        data = r.json()
+        return data
 
 tb=Thingsboard(user,password,url)
 devices=tb.findDevices()
@@ -106,16 +126,67 @@ ts=int(timestamp*1000) # end t
 timestamp = time.mktime(time.strptime('2025-12-31 0:0:0', '%Y-%m-%d %H:%M:%S'))
 ts2=int(timestamp*1000) # end ts
 
+conn = psycopg2.connect(database=DB,host=HOST,user=USER,password=PASSWORD,port=PORT)
+driver=PsqlDbDriver(conn,DB)
+conv=Json2DbBase(driver,JSONPath("$.devType"),
+    timeFieldName=re.compile(".*time"),
+    tablePrefix='codonline_') 
+
+def getSite(conn): 
+    sql="""SELECT distinct "siteID","sitename" FROM devices"""
+    cur=conn.cursor()
+    cur.execute(sql)
+    rows=cur.fetchall()
+    return [[id,name.replace("นิคมอุตสาหกรรม","")] for id,name in rows]
+
+sites=getSite(conn)
+
+def getSiteId(text): 
+    text=text.replace("นิคมฯ","")
+    dists=[textdist(text,name) for id,name in sites]
+    '''inx=np.argmin(dists)
+    ic(text,sites[inx])'''
+    inx=np.argmin(dists)
+    #ic(text,sites[inx])
+    return sites[inx][0]
+allData=[]
 for r in devices:
     #ic(r)
+    #ic(tb.getAttr(r['id'],scope="CLIENT_SCOPE"))
+    #ic(tb.getAttr(r['id'],scope="SERVER_SCOPE"))
+    #ic(tb.getAttr(r['id'],scope="SHARED_SCOPE"))
+    siteId=getSiteId(r['label'])
     #cred=tb.getDevCredentials(r['id'])
     data=tb.getLatestTimeSeries(r['id'])
     if len(data): 
-        ic(r['name'])
-        ic(data)
+        #ic(r['name'])
+        #ic(data)
         keys=",".join(data.keys())
+        keys="COD,BOD,Flow,Battery_Status" 
         data=tb.getTimeSeries(r['id'],ts,ts2,keys=keys)
-        ic(data)
+        fields=dict(device_id=r['name'],devType="COD & BOD")
+        data=mergeByTs(data)
+        def convert(x): 
+            x["cod"]=float(x["COD"])
+            del x["COD"]
+            x["bod"]=float(x["BOD"])
+            del x["BOD"]
+            x["flow"]=float(x["Flow"])
+            del x["Flow"]
+            x["time"]=int(x["ts"])//1000
+            del x["ts"]
+            del x["Battery_Status"]
+            return dict(**fields,siteID=siteId,**x)
+        data=[convert(x) for x in data]
+        #ic(data)
+        allData.extend(data)
+        
+        #ds=gen_data.genData(1) 
+        #print(ds)
+conv.flatten(allData) 
+conv.scan(allData)
+conv.done() 
+#saveJson("maxId.json",maxId)
         
 """
 def tb_asset_id(access_token, asset_name):
