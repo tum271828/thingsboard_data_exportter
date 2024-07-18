@@ -18,13 +18,18 @@ from json2db import *
 from textdistance import levenshtein as textdist
 import numpy as np 
 
+def dict2(k,v): 
+    ans=dict(ts=k)
+    ans.update(**v)
+    return ans
+
 def mergeByTs(tbTelemetryData): 
         recs=defaultdict(dict)
         for k,v in data.items(): 
             for obj in v:
                 ts,val=obj["ts"],obj["value"]
                 recs[ts][k]=val
-        return [dict(ts=k,**v) for k,v in recs.items()]
+        return [dict2(k,v) for k,v in recs.items()]
 
 class Thingsboard():
 
@@ -131,6 +136,11 @@ driver=PsqlDbDriver(conn,DB)
 conv=Json2DbBase(driver,JSONPath("$.devType"),
     timeFieldName=re.compile(".*time"),
     tablePrefix='codonline_') 
+    
+conv2=Json2DbBase(driver,None,
+    timeFieldName=re.compile(".*time"),
+    tablePrefix='codonline_',toTable="device") 
+
 
 def getSite(conn): 
     sql="""SELECT distinct "siteID","sitename" FROM devices"""
@@ -150,32 +160,45 @@ def getSiteId(text):
     #ic(text,sites[inx])
     return sites[inx][0]
 allData=[]
+headers=[]
 for r in devices:
-    #ic(r)
-    #ic(tb.getAttr(r['id'],scope="CLIENT_SCOPE"))
-    #ic(tb.getAttr(r['id'],scope="SERVER_SCOPE"))
-    #ic(tb.getAttr(r['id'],scope="SHARED_SCOPE"))
+    ic(r)
+    header=dict(device_id=r["name"],point=r["type"])
+    for prop in tb.getAttr(r['id'],scope="SERVER_SCOPE"):
+        key=prop["key"]
+        val=prop["value"]
+        if key=="latitude":
+            header["lat"]=val 
+        if key=="longitude":
+            header["long"]=val 
+            
+    '''ic(tb.getAttr(r['id'],scope="CLIENT_SCOPE"))
+    ic(tb.getAttr(r['id'],scope="SERVER_SCOPE"))
+    ic(tb.getAttr(r['id'],scope="SHARED_SCOPE"))'''
+    
     siteId=getSiteId(r['label'])
+    header["siteID"]=siteId
     #cred=tb.getDevCredentials(r['id'])
+    headers.append(header)
     data=tb.getLatestTimeSeries(r['id'])
     if len(data): 
         #ic(r['name'])
         #ic(data)
         keys=",".join(data.keys())
-        keys="COD,BOD,Flow,Battery_Status" 
+        #keys="COD,BOD,Flow" 
         data=tb.getTimeSeries(r['id'],ts,ts2,keys=keys)
         fields=dict(device_id=r['name'],devType="COD & BOD")
         data=mergeByTs(data)
         def convert(x): 
-            x["cod"]=float(x["COD"])
+            '''x["cod"]=float(x["COD"])
             del x["COD"]
             x["bod"]=float(x["BOD"])
             del x["BOD"]
             x["flow"]=float(x["Flow"])
-            del x["Flow"]
+            del x["Flow"]'''
             x["time"]=int(x["ts"])//1000
             del x["ts"]
-            del x["Battery_Status"]
+            #del x["Battery_Status"]
             return dict(**fields,siteID=siteId,**x)
         data=[convert(x) for x in data]
         #ic(data)
@@ -184,8 +207,13 @@ for r in devices:
         #ds=gen_data.genData(1) 
         #print(ds)
 conv.flatten(allData) 
+conv.scan(allData,insert=0)
 conv.scan(allData)
 conv.done() 
+
+conv2.flatten(headers) 
+conv2.scan(headers)
+conv2.done() 
 #saveJson("maxId.json",maxId)
         
 """
