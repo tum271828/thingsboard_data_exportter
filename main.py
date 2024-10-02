@@ -221,11 +221,15 @@ for r in devices:
             del x["BOD"]
             x["flow"]=float(x["Flow"])
             del x["Flow"]'''
-            x["time"]=int(x["ts"])//1000
+            val=int(x["ts"])
+            if ts<=val<=ts2: 
+                x['time']=val//1000
+            else: 
+                x["time"]=val
             del x["ts"]
             #del x["Battery_Status"]
             return dict(**fields,siteID=siteId,**x)
-        data=[convert(x) for x in data if ts<=int(x['ts'])<=ts2]
+        data=[convert(x) for x in data]# if ts<=int(x['ts'])<=ts2]
         #ic(data)
         allData.extend(data)
         
