@@ -22,6 +22,19 @@ def dict2(k,v):
     ans=dict(ts=k)
     ans.update(**v)
     return ans
+    
+def loadJson(fn,default=None): 
+    if os.path.isfile(fn): 
+        with open(fn,"r") as fp: 
+            return json.load(fp)
+    else: 
+        if default is None: 
+            raise Exception(f"{fn} is not found")
+        return default
+        
+def saveJson(fn,objs,**kargs): 
+    with open(fn,"w") as fp: 
+        json.dump(objs,fp,**kargs)
 
 def mergeByTs(tbTelemetryData): 
         recs=defaultdict(dict)
@@ -126,10 +139,14 @@ class Thingsboard():
 
 tb=Thingsboard(user,password,url)
 devices=tb.findDevices()
-timestamp = time.mktime(time.strptime('2021-11-30 0:0:0', '%Y-%m-%d %H:%M:%S'))
+startTime=loadJson("maxTime.json",datetime.datetime(2022,1,1).timestamp())
+timestamp = startTime+1 #time.mktime(time.strptime('2021-11-30 0:0:0', '%Y-%m-%d %H:%M:%S'))
+print(datetime.datetime.fromtimestamp(timestamp))
+
 ts=int(timestamp*1000) # end t
-timestamp = time.mktime(time.strptime('2025-12-31 0:0:0', '%Y-%m-%d %H:%M:%S'))
+timestamp = time.time() #mktime(time.strptime('2025-12-31 0:0:0', '%Y-%m-%d %H:%M:%S'))
 ts2=int(timestamp*1000) # end ts
+
 
 conn = psycopg2.connect(database=DB,host=HOST,user=USER,password=PASSWORD,port=PORT)
 driver=PsqlDbDriver(conn,DB)
@@ -159,10 +176,11 @@ def getSiteId(text):
     inx=np.argmin(dists)
     #ic(text,sites[inx])
     return sites[inx][0]
+ic(ts,ts2)
 allData=[]
 headers=[]
 for r in devices:
-    ic(r)
+    #ic(r["type"])
     header=dict(device_id=r["name"],point=r["type"])
     for prop in tb.getAttr(r['id'],scope="SERVER_SCOPE"):
         key=prop["key"]
@@ -182,13 +200,20 @@ for r in devices:
     headers.append(header)
     data=tb.getLatestTimeSeries(r['id'])
     if len(data): 
+        #ic(len(data))
         #ic(r['name'])
         #ic(data)
         keys=",".join(data.keys())
         #keys="COD,BOD,Flow" 
         data=tb.getTimeSeries(r['id'],ts,ts2,keys=keys)
-        fields=dict(device_id=r['name'],devType="COD & BOD")
+        #ic(len(data))
+        #ic(data)
+        #ic(ts,ts2)
+        #exit()
+        fields=dict(device_id=r['name'],devType=r['type'])
         data=mergeByTs(data)
+        #ic(data)
+        #exit()
         def convert(x): 
             '''x["cod"]=float(x["COD"])
             del x["COD"]
@@ -200,22 +225,27 @@ for r in devices:
             del x["ts"]
             #del x["Battery_Status"]
             return dict(**fields,siteID=siteId,**x)
-        data=[convert(x) for x in data]
+        data=[convert(x) for x in data if ts<=int(x['ts'])<=ts2]
         #ic(data)
         allData.extend(data)
         
         #ds=gen_data.genData(1) 
         #print(ds)
-conv.flatten(allData) 
-conv.scan(allData,insert=0)
-conv.scan(allData)
-conv.done() 
-
-conv2.flatten(headers) 
-conv2.scan(headers)
-conv2.done() 
-#saveJson("maxId.json",maxId)
+if len(allData):
+    #ic(allData)
+    maxTs=max([r['time'] for r in allData])
+    if 1:
+        conv.flatten(allData) 
+        conv.scan(allData,insert=0)
+        conv.scan(allData)
+        conv.done() 
         
+        conv2.flatten(headers) 
+        conv2.scan(headers)
+        conv2.done() 
+        saveJson("maxTime.json",maxTs)
+    ic(maxTs,datetime.datetime.fromtimestamp(maxTs))
+            
 """
 def tb_asset_id(access_token, asset_name):
     headers = {'X-Authorization': f'Bearer {access_token}'}
